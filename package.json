@@ -2,17 +2,17 @@
   "name": "telegram-video-bot",
   "version": "1.0.0",
   "description": "A Telegram bot for video calls via Mini App",
-  "main": "server.js",
+  "main": "start.js",
   "engines": {
     "node": "18.x",
     "npm": "8.x"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node start.js",
+    "server": "node server.js",
     "bot": "node bot.js",
-    "dev": "nodemon server.js",
-    "build": "npm install",
-    "prestart": "if [ ! -d public ]; then mkdir public && echo '<html><body><h1>Video Call App</h1></body></html>' > public/index.html; fi"
+    "dev": "nodemon start.js",
+    "build": "npm install"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
