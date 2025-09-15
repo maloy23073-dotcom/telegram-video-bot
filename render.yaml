@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-video-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SERVER_URL
+        fromService:
+          name: telegram-video-bot
+          type: web
+          property: url
