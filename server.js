@@ -1,55 +1,44 @@
 const express = require('express');
-const path = require('path');
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(express.static('public'));
 app.use(express.json());
 
-// Хранилище для WebRTC офферов (временное, для демо)
-const calls = new Map();
-
-// Маршрут для главной страницы
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Health check endpoint - ОБЯЗАТЕЛЬНО ДОБАВЬТЕ ЭТО
+app.get('/health', (req, res) => {
+    console.log('Health check passed');
+    res.status(200).send('OK');
 });
 
-// Сигнальный сервер для WebRTC
-app.post('/signal', (req, res) => {
-  const { callId, type, data } = req.body;
-  
-  if (!calls.has(callId)) {
-    calls.set(callId, {});
-  }
-  
-  const callData = calls.get(callId);
-  
-  switch (type) {
-    case 'offer':
-      callData.offer = data;
-      res.json({ status: 'offer received' });
-      break;
-      
-    case 'answer':
-      callData.answer = data;
-      res.json({ status: 'answer received' });
-      break;
-      
-    case 'get-offer':
-      res.json({ offer: callData.offer || null });
-      break;
-      
-    case 'get-answer':
-      res.json({ answer: callData.answer || null });
-      break;
-      
-    default:
-      res.status(400).json({ error: 'Unknown signal type' });
-  }
+// Основной маршрут
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Video Call Server</title>
+            <style>
+                body { 
+                    font-family: Arial, sans-serif; 
+                    text-align: center; 
+                    padding: 50px; 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>🎥 Video Call Server</h1>
+            <p>Server is running successfully!</p>
+            <p>Health check: <a href="/health" style="color: white;">/health</a></p>
+        </body>
+        </html>
+    `);
 });
 
 // Запуск сервера
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server started on port ${PORT}`);
+    console.log(`Health check available at: http://localhost:${PORT}/health`);
 });
