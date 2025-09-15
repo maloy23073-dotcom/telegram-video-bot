@@ -1,44 +1,16 @@
-// start.js - запускает и сервер и бота одновременно
-const { spawn } = require('child_process');
-const path = require('path');
-
-console.log('🚀 Starting Telegram Video Bot...');
-console.log('📋 Starting both server and bot processes');
+// start.js - запускает и сервер и бота
+console.log('🚀 Starting server and bot simultaneously...');
 
 // Запускаем сервер
-const server = spawn('node', ['server.js'], {
-    stdio: 'inherit',
-    cwd: __dirname
-});
+require('./server.js');
 
-// Запускаем бота с небольшой задержкой
+// Даем серверу время запуститься, потом запускаем бота
 setTimeout(() => {
-    console.log('🤖 Starting bot process...');
-    const bot = spawn('node', ['bot.js'], {
-        stdio: 'inherit',
-        cwd: __dirname
-    });
-
-    bot.on('error', (error) => {
-        console.error('❌ Bot process error:', error);
-    });
-
-    bot.on('exit', (code) => {
-        console.log(`🤖 Bot process exited with code ${code}`);
-    });
-}, 2000);
-
-// Обработка ошибок
-server.on('error', (error) => {
-    console.error('❌ Server process error:', error);
-});
-
-server.on('exit', (code) => {
-    console.log(`🌐 Server process exited with code ${code}`);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down...');
-    process.exit(0);
-});
+    console.log('🤖 Starting bot...');
+    try {
+        require('./bot.js');
+        console.log('✅ Bot started successfully');
+    } catch (error) {
+        console.error('❌ Bot failed to start:', error);
+    }
+}, 3000);
