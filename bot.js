@@ -56,6 +56,7 @@ function initializeDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         call_id INTEGER NOT NULL,
         user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
         invited_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (call_id) REFERENCES calls (id)
@@ -255,8 +256,10 @@ bot.onText(/\/mycalls/, (msg) => {
             if (createdCalls.length > 0) {
                 message += "👑 Созданные вами:\n";
                 createdCalls.forEach((call, index) => {
+                    const participantCount = getParticipantCount(call.id);
                     message += `${index + 1}. ${call.title}\n`;
                     message += `   📅 ${call.scheduled_time} (${call.duration_minutes} мин)\n`;
+                    message += `   👥 Участников: ${participantCount}\n`;
                     message += `   🎯 ID: ${call.id} | Status: ${call.status}\n\n`;
                 });
             }
@@ -274,6 +277,16 @@ bot.onText(/\/mycalls/, (msg) => {
         });
     });
 });
+
+// Функция для получения количества участников
+function getParticipantCount(callId) {
+    return new Promise((resolve) => {
+        db.get(`SELECT COUNT(*) as count FROM invitations WHERE call_id = ? AND status = 'accepted'`, [callId], (err, row) => {
+            if (err) resolve(0);
+            else resolve(row.count);
+        });
+    });
+}
 
 // ===== КОМАНДА /cancelcall =====
 bot.onText(/\/cancelcall(?: (\d+))?/, (msg, match) => {
@@ -316,6 +329,8 @@ bot.onText(/\/invite(?: (\d+)(?: (@\w+))?)?/, (msg, match) => {
         return bot.sendMessage(chatId, "❌ Укажите username пользователя\nПример: /invite 5 @username");
     }
 
+    const cleanUsername = username.replace('@', '').toLowerCase();
+
     // Проверяем существование звонка и права доступа
     db.get(`SELECT * FROM calls WHERE id = ? AND creator_id = ?`, [callId, chatId], (err, call) => {
         if (err) {
@@ -327,10 +342,85 @@ bot.onText(/\/invite(?: (\d+)(?: (@\w+))?)?/, (msg, match) => {
             return bot.sendMessage(chatId, "❌ Звонок не найден или у вас нет прав для приглашения");
         }
 
-        // Упрощенная версия - просто отправляем приглашение
-        // В реальном боте нужно было бы использовать Bot API для получения user_id по username
-        const cleanUsername = username.replace('@', '');
-        const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+        // Пытаемся найти пользователя по username
+        findUserByUsername(cleanUsername)
+            .then(userId => {
+                if (!userId) {
+                    return bot.sendMessage(chatId, `❌ Пользователь @${cleanUsername} не найден или не начинал диалог с ботом`);
+                }
+
+                // Проверяем, не приглашали ли уже этого пользователя
+                db.get(`SELECT * FROM invitations WHERE call_id = ? AND user_id = ?`, [callId, userId], (err, existingInvite) => {
+                    if (err) {
+                        console.error('Check existing invite error:', err);
+                        return bot.sendMessage(chatId, "❌ Ошибка проверки приглашения");
+                    }
+
+                    if (existingInvite) {
+                        return bot.sendMessage(chatId, `❌ Пользователь @${cleanUsername} уже приглашен на этот звонок`);
+                    }
+
+                    // Сохраняем приглашение в БД
+                    db.run(
+                        `INSERT INTO invitations (call_id, user_id, username, status) VALUES (?, ?, ?, ?)`,
+                        [callId, userId, cleanUsername, 'pending'],
+                        function(err) {
+                            if (err) {
+                                console.error('Invitation error:', err);
+                                return bot.sendMessage(chatId, "❌ Ошибка при создании приглашения");
+                            }
+
+                            // Отправляем приглашение пользователю
+                            sendInvitation(userId, call, msg.from.username)
+                                .then(() => {
+                                    bot.sendMessage(chatId, `✅ Приглашение отправлено пользователю @${cleanUsername}`);
+
+                                    // Создаем уведомление за 5 минут до звонка
+                                    const callTime = new Date(call.scheduled_time);
+                                    const notificationTime = new Date(callTime.getTime() - 5 * 60000);
+
+                                    db.run(
+                                        `INSERT INTO notifications (call_id, user_id, type, scheduled_time) VALUES (?, ?, ?, ?)`,
+                                        [callId, userId, '5min_reminder', notificationTime.toISOString()]
+                                    );
+                                })
+                                .catch(error => {
+                                    console.error('Send invitation error:', error);
+                                    bot.sendMessage(chatId, `❌ Не удалось отправить приглашение пользователю @${cleanUsername}`);
+                                });
+                        }
+                    );
+                });
+            })
+            .catch(error => {
+                console.error('Find user error:', error);
+                bot.sendMessage(chatId, `❌ Ошибка поиска пользователя @${cleanUsername}`);
+            });
+    });
+});
+
+// Функция для поиска пользователя по username
+function findUserByUsername(username) {
+    return new Promise((resolve, reject) => {
+        // Этот метод работает только если пользователь уже взаимодействовал с ботом
+        // В реальном приложении нужно хранить username → user_id при первом взаимодействии
+        db.get(`SELECT user_id FROM invitations WHERE username = ? LIMIT 1`, [username], (err, row) => {
+            if (err) return reject(err);
+
+            if (row) {
+                resolve(row.user_id);
+            } else {
+                // Если пользователь не найден в БД, попробуем другие методы
+                resolve(null);
+            }
+        });
+    });
+}
+
+// Функция для отправки приглашения
+function sendInvitation(userId, call, inviterUsername) {
+    return new Promise((resolve, reject) => {
+        const joinLink = `${SERVER_URL}/call.html?call_id=${call.id}`;
 
         const inviteMessage = `
 🎉 Вас пригласили на видеозвонок!
@@ -338,38 +428,135 @@ bot.onText(/\/invite(?: (\d+)(?: (@\w+))?)?/, (msg, match) => {
 📋 Название: ${call.title}
 📅 Время: ${call.scheduled_time}
 ⏱ Длительность: ${call.duration_minutes} минут
-👤 Организатор: @${msg.from.username}
+👤 Организатор: @${inviterUsername}
 
 🔗 Присоединиться: ${joinLink}
 
-Для принятия приглашения перейдите по ссылке выше.
+✅ Принять: /accept ${call.id}
+❌ Отклонить: /decline ${call.id}
         `;
 
-        // Пытаемся отправить сообщение пользователю
-        // Note: Это будет работать только если пользователь уже начал диалог с ботом
-        bot.sendMessage(chatId, `📤 Отправляю приглашение пользователю @${cleanUsername}...`);
+        // Добавляем клавиатуру с кнопками
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: "✅ Принять", callback_data: `accept_${call.id}` },
+                    { text: "❌ Отклонить", callback_data: `decline_${call.id}` }
+                ],
+                [
+                    { text: "🔗 Перейти к звонку", url: joinLink }
+                ]
+            ]
+        };
 
-        // В реальном приложении здесь должен быть код для получения user_id пользователя
-        // Для демонстрации просто отправляем сообщение в текущий чат
-        const demoMessage = `
-💡 Демо: Приглашение для @${cleanUsername}
-
-${inviteMessage}
-
-⚠️ В реальной реализации бот отправил бы это сообщение непосредственно пользователю.
-        `;
-
-        bot.sendMessage(chatId, demoMessage)
-            .then(() => {
-                // В реальном приложении здесь бы сохранялось приглашение в БД
-                bot.sendMessage(chatId, `✅ Приглашение подготовлено для @${cleanUsername}`);
-            })
-            .catch(error => {
-                console.error('Send invite error:', error);
-                bot.sendMessage(chatId, `❌ Ошибка при отправке приглашения`);
-            });
+        bot.sendMessage(userId, inviteMessage, { reply_markup: keyboard })
+            .then(() => resolve())
+            .catch(error => reject(error));
     });
+}
+
+// Обработка callback-кнопок
+bot.on('callback_query', (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const data = callbackQuery.data;
+    const messageId = callbackQuery.message.message_id;
+
+    if (data.startsWith('accept_')) {
+        const callId = data.replace('accept_', '');
+        handleAcceptInvitation(chatId, callId, messageId);
+    } else if (data.startsWith('decline_')) {
+        const callId = data.replace('decline_', '');
+        handleDeclineInvitation(chatId, callId, messageId);
+    }
 });
+
+// Обработка принятия приглашения
+function handleAcceptInvitation(chatId, callId, messageId) {
+    db.run(
+        `UPDATE invitations SET status = 'accepted' WHERE call_id = ? AND user_id = ?`,
+        [callId, chatId],
+        function(err) {
+            if (err) {
+                console.error('Accept error:', err);
+                return bot.sendMessage(chatId, "❌ Ошибка принятия приглашения");
+            }
+
+            if (this.changes === 0) {
+                return bot.sendMessage(chatId, "❌ Приглашение не найдено");
+            }
+
+            // Получаем информацию о звонке
+            db.get(`SELECT * FROM calls WHERE id = ?`, [callId], (err, call) => {
+                if (err || !call) {
+                    bot.answerCallbackQuery({ callback_query_id: messageId, text: "✅ Приглашение принято" });
+                    return bot.sendMessage(chatId, "✅ Приглашение принято");
+                }
+
+                const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+                const message = `
+✅ Вы приняли приглашение на звонок!
+
+📋 ${call.title}
+📅 ${call.scheduled_time}
+🔗 ${joinLink}
+
+Напоминание придет за 5 минут до начала.
+                `;
+
+                // Обновляем сообщение с приглашением
+                bot.editMessageText("✅ Приглашение принято", {
+                    chat_id: chatId,
+                    message_id: messageId
+                });
+
+                bot.sendMessage(chatId, message);
+
+                // Уведомляем организатора
+                bot.getChat(chatId).then(chat => {
+                    const username = chat.username ? `@${chat.username}` : 'пользователь';
+                    bot.sendMessage(call.creator_id, `✅ ${username} принял приглашение на звонок "${call.title}"`);
+                });
+
+                bot.answerCallbackQuery({ callback_query_id: messageId, text: "Приглашение принято!" });
+            });
+        }
+    );
+}
+
+// Обработка отклонения приглашения
+function handleDeclineInvitation(chatId, callId, messageId) {
+    db.run(
+        `UPDATE invitations SET status = 'declined' WHERE call_id = ? AND user_id = ?`,
+        [callId, chatId],
+        function(err) {
+            if (err) {
+                console.error('Decline error:', err);
+                return bot.sendMessage(chatId, "❌ Ошибка отклонения приглашения");
+            }
+
+            // Удаляем уведомление
+            db.run(`DELETE FROM notifications WHERE call_id = ? AND user_id = ?`, [callId, chatId]);
+
+            // Обновляем сообщение
+            bot.editMessageText("❌ Приглашение отклонено", {
+                chat_id: chatId,
+                message_id: messageId
+            });
+
+            // Уведомляем организатора
+            db.get(`SELECT * FROM calls WHERE id = ?`, [callId], (err, call) => {
+                if (!err && call) {
+                    bot.getChat(chatId).then(chat => {
+                        const username = chat.username ? `@${chat.username}` : 'пользователь';
+                        bot.sendMessage(call.creator_id, `❌ ${username} отклонил приглашение на звонок "${call.title}"`);
+                    });
+                }
+            });
+
+            bot.answerCallbackQuery({ callback_query_id: messageId, text: "Приглашение отклонено" });
+        }
+    );
+}
 
 // ===== КОМАНДА /accept =====
 bot.onText(/\/accept(?: (\d+))?/, (msg, match) => {
@@ -380,25 +567,7 @@ bot.onText(/\/accept(?: (\d+))?/, (msg, match) => {
         return bot.sendMessage(chatId, "❌ Укажите ID звонка\nПример: /accept 5");
     }
 
-    // В демо-режиме просто подтверждаем принятие
-    db.get(`SELECT * FROM calls WHERE id = ?`, [callId], (err, call) => {
-        if (err || !call) {
-            return bot.sendMessage(chatId, "✅ Приглашение принято (демо)");
-        }
-
-        const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
-        const message = `
-✅ Вы приняли приглашение на звонок!
-
-📋 ${call.title}
-📅 ${call.scheduled_time}
-🔗 ${joinLink}
-
-Напоминание придет за 5 минут до начала.
-        `;
-
-        bot.sendMessage(chatId, message);
-    });
+    handleAcceptInvitation(chatId, callId, null);
 });
 
 // ===== КОМАНДА /decline =====
@@ -410,7 +579,7 @@ bot.onText(/\/decline(?: (\d+))?/, (msg, match) => {
         return bot.sendMessage(chatId, "❌ Укажите ID звонка\nПример: /decline 5");
     }
 
-    bot.sendMessage(chatId, "✅ Приглашение отклонено (демо)");
+    handleDeclineInvitation(chatId, callId, null);
 });
 
 // Функция для отправки уведомлений
@@ -436,7 +605,6 @@ function sendNotification(userId, callId, type) {
 
         bot.sendMessage(userId, message)
             .then(() => {
-                // Помечаем уведомление как отправленное
                 db.run(`UPDATE notifications SET sent = TRUE WHERE call_id = ? AND user_id = ? AND type = ?`,
                     [callId, userId, type]);
             })
