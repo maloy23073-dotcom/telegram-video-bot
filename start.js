@@ -1,16 +1,19 @@
-// start.js - запускает и сервер и бота
-console.log('🚀 Starting server and bot simultaneously...');
+console.log('🚀 Starting server and bot...');
 
-// Запускаем сервер
-require('./server.js');
+// Start server
+try {
+    require('./server.js');
+    console.log('✅ Server started');
+} catch (error) {
+    console.error('❌ Server failed:', error);
+}
 
-// Даем серверу время запуститься, потом запускаем бота
+// Start bot with delay
 setTimeout(() => {
-    console.log('🤖 Starting bot...');
     try {
         require('./bot.js');
-        console.log('✅ Bot started successfully');
+        console.log('✅ Bot started');
     } catch (error) {
-        console.error('❌ Bot failed to start:', error);
+        console.error('❌ Bot failed:', error);
     }
 }, 3000);

@@ -1,40 +1,53 @@
 const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 10000;
+const path = require('path');
+const fs = require('fs');
+const cors = require('cors');
 
-// Health check endpoint - ОБЯЗАТЕЛЬНО ДОБАВЬТЕ
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+// Health check
 app.get('/health', (req, res) => {
-    console.log('Health check passed at', new Date().toISOString());
     res.status(200).send('OK');
 });
 
-// Основной маршрут
+// Main route
 app.get('/', (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Video Call Server</title>
-            <style>
-                body { 
-                    font-family: Arial, sans-serif; 
-                    text-align: center; 
-                    padding: 50px; 
-                    background: #667eea;
-                    color: white;
-                }
-            </style>
-        </head>
-        <body>
-            <h1>✅ Video Call Server is Running</h1>
-            <p>Health check: <a href="/health" style="color: white;">/health</a></p>
-        </body>
-        </html>
-    `);
+    const publicPath = path.join(__dirname, 'public', 'index.html');
+    if (fs.existsSync(publicPath)) {
+        res.sendFile(publicPath);
+    } else {
+        res.send('Video Call Server is Running');
+    }
 });
 
-// Запуск сервера
+// WebRTC signaling
+const calls = new Map();
+app.post('/signal', (req, res) => {
+    try {
+        const { callId, type, data } = req.body;
+        if (!calls.has(callId)) calls.set(callId, {});
+
+        const callData = calls.get(callId);
+        switch (type) {
+            case 'offer': callData.offer = data; break;
+            case 'answer': callData.answer = data; break;
+            case 'get-offer': return res.json({ offer: callData.offer });
+            case 'get-answer': return res.json({ answer: callData.answer });
+            default: return res.status(400).json({ error: 'Invalid type' });
+        }
+        res.json({ status: 'success' });
+    } catch (error) {
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server started on port ${PORT}`);
-    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`🚀 Server running on port ${PORT}`);
 });
