@@ -1,8 +1,0 @@
-telegram-video-bot/
-├── bot.js
-├── server.js
-├── package.json
-└── public/
-    ├── index.html
-    ├── style.css
-    └── start.js

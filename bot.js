@@ -1,3 +1,5 @@
+require('dotenv').config(); // Добавьте эту строку в самом начале
+
 const TelegramBot = require('node-telegram-bot-api');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
@@ -5,7 +7,6 @@ const path = require('path');
 // ===== КОНФИГУРАЦИЯ =====
 const TOKEN = process.env.BOT_TOKEN;
 const SERVER_URL = process.env.SERVER_URL || 'https://telegram-video-bot-vvfl.onrender.com';
-
 // Проверка переменных окружения
 console.log('=== BOT STARTING ===');
 console.log('BOT_TOKEN:', TOKEN ? '✅ Set' : '❌ Not set');
@@ -23,7 +24,31 @@ const bot = new TelegramBot(TOKEN, {
     }
 });
 
-const db = new sqlite3.Database(path.join(__dirname, 'calls.db'));
+// Инициализация БД
+const dbPath = path.join(__dirname, 'calls.db');
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error('❌ Database connection error:', err);
+    } else {
+        console.log('✅ Connected to SQLite database');
+
+        // Создание таблицы
+        db.run(`CREATE TABLE IF NOT EXISTS calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator_id INTEGER NOT NULL,
+            scheduled_time TEXT NOT NULL,
+            duration_minutes INTEGER NOT NULL,
+            status TEXT DEFAULT 'scheduled',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`, (err) => {
+            if (err) {
+                console.error('❌ Database table creation error:', err);
+            } else {
+                console.log('✅ Database table ready');
+            }
+        });
+    }
+});
 
 // Обработчики ошибок
 bot.on('error', (error) => console.error('❌ Bot error:', error));
@@ -36,21 +61,6 @@ bot.getMe()
         console.error('❌ Bot auth failed:', error);
         process.exit(1);
     });
-
-// Инициализация БД
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS calls (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        creator_id INTEGER NOT NULL,
-        scheduled_time TEXT NOT NULL,
-        duration_minutes INTEGER NOT NULL,
-        status TEXT DEFAULT 'scheduled',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`, (err) => {
-        if (err) console.error('❌ Database error:', err);
-        else console.log('✅ Database ready');
-    });
-});
 
 // ===== КОМАНДА /start =====
 bot.onText(/\/start/, (msg) => {
@@ -92,7 +102,7 @@ bot.onText(/\/newcall/, async (msg) => {
 
         const timeMsg = await new Promise((resolve, reject) => {
             const handler = (msg) => {
-                if (msg.chat.id === chatId) {
+                if (msg.chat.id === chatId && !msg.text.startsWith('/')) {
                     bot.removeListener('message', handler);
                     resolve(msg);
                 }
@@ -106,7 +116,7 @@ bot.onText(/\/newcall/, async (msg) => {
 
         const durationMsg = await new Promise((resolve, reject) => {
             const handler = (msg) => {
-                if (msg.chat.id === chatId) {
+                if (msg.chat.id === chatId && !msg.text.startsWith('/')) {
                     bot.removeListener('message', handler);
                     resolve(msg);
                 }
@@ -121,27 +131,27 @@ bot.onText(/\/newcall/, async (msg) => {
         }
 
         // Сохранение в БД
-        await new Promise((resolve, reject) => {
-            db.run(
-                `INSERT INTO calls (creator_id, scheduled_time, duration_minutes) VALUES (?, ?, ?)`,
-                [chatId, timeMsg.text, duration],
-                function(err) {
-                    if (err) return reject(err);
-                    resolve(this.lastID);
+        db.run(
+            `INSERT INTO calls (creator_id, scheduled_time, duration_minutes) VALUES (?, ?, ?)`,
+            [chatId, timeMsg.text, duration],
+            function(err) {
+                if (err) {
+                    console.error('Database insert error:', err);
+                    return bot.sendMessage(chatId, "❌ Ошибка при создании звонка");
                 }
-            );
-        }).then(async (callId) => {
-            const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
-            const message = `
+
+                const joinLink = `${SERVER_URL}/call.html?call_id=${this.lastID}`;
+                const message = `
 ✅ Звонок создан!
 
 📅 ${timeMsg.text}
 ⏱ ${duration} минут
 🔗 ${joinLink}
-🎯 ID: ${callId}
-            `;
-            await bot.sendMessage(chatId, message);
-        });
+🎯 ID: ${this.lastID}
+                `;
+                bot.sendMessage(chatId, message).catch(console.error);
+            }
+        );
 
     } catch (error) {
         console.error('Newcall error:', error);
@@ -189,7 +199,7 @@ bot.onText(/\/cancelcall(?: (\d+))?/, (msg, match) => {
         }
 
         if (this.changes === 0) {
-            return bot.sendMessage(chatId, "❌ Звонк не найден");
+            return bot.sendMessage(chatId, "❌ Звонок не найден");
         }
 
         bot.sendMessage(chatId, "✅ Звонок отменен").catch(console.error);
