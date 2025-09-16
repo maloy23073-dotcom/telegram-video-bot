@@ -100,61 +100,101 @@ bot.onText(/\/help/, (msg) => {
 // ===== КОМАНДА /newcall =====
 bot.onText(/\/newcall/, (msg) => {
     const chatId = msg.chat.id;
-    let userState = {};
+    console.log(`User ${chatId} started new call creation`);
 
-    bot.sendMessage(chatId, "🕐 *На какое время планируем звонок?*\nВведите в формате: ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: 2024-12-25 15:30", { parse_mode: 'Markdown' })
-        .then(() => {
-            bot.once('message', (timeMsg) => {
-                if (timeMsg.chat.id === chatId) {
-                    userState.time = timeMsg.text;
+    // Создаем объект для хранения состояния пользователя
+    const userState = {
+        step: 'asking_time',
+        time: null,
+        duration: null
+    };
 
-                    bot.sendMessage(chatId, "⏱ *Какова продолжительность звонка?* (в минутах)\nНапример: 30", { parse_mode: 'Markdown' })
-                        .then(() => {
-                            bot.once('message', (durationMsg) => {
-                                if (durationMsg.chat.id === chatId) {
-                                    const duration = parseInt(durationMsg.text);
+    // Функция для обработки ответов пользователя
+    const responseHandler = (responseMsg) => {
+        if (responseMsg.chat.id !== chatId) return;
 
-                                    if (isNaN(duration) || duration <= 0) {
-                                        return bot.sendMessage(chatId, "❌ Пожалуйста, введите корректное число для длительности (больше 0)");
-                                    }
+        if (userState.step === 'asking_time') {
+            userState.time = responseMsg.text;
+            userState.step = 'asking_duration';
 
-                                    // Сохраняем звонок в базу данных
-                                    db.run(
-                                        `INSERT INTO calls (creator_id, scheduled_time, duration_minutes) VALUES (?, ?, ?)`,
-                                        [chatId, userState.time, duration],
-                                        function(err) {
-                                            if (err) {
-                                                console.error('Database insert error:', err);
-                                                return bot.sendMessage(chatId, "❌ Ошибка при создании звонка");
-                                            }
+            console.log(`User ${chatId} set time: ${userState.time}`);
 
-                                            const callId = this.lastID;
-                                            const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+            bot.sendMessage(chatId, "⏱ *Какова продолжительность звонка?* (в минутах)\nНапример: 30", {
+                parse_mode: 'Markdown',
+                reply_markup: { force_reply: true }
+            }).then(() => {
+                // Ждем следующий ответ
+                bot.once('message', responseHandler);
+            }).catch(error => {
+                console.error('Error asking duration:', error);
+            });
 
-                                            const message = `
+        } else if (userState.step === 'asking_duration') {
+            const duration = parseInt(responseMsg.text);
+
+            if (isNaN(duration) || duration <= 0) {
+                bot.sendMessage(chatId, "❌ Пожалуйста, введите корректное число для длительности (больше 0)\n\nНапример: 30", {
+                    parse_mode: 'Markdown',
+                    reply_markup: { force_reply: true }
+                }).then(() => {
+                    // Повторно ждем ответ с длительностью
+                    bot.once('message', responseHandler);
+                });
+                return;
+            }
+
+            userState.duration = duration;
+            console.log(`User ${chatId} set duration: ${userState.duration} minutes`);
+
+            // Сохраняем звонок в базу данных
+            db.run(
+                `INSERT INTO calls (creator_id, scheduled_time, duration_minutes) VALUES (?, ?, ?)`,
+                [chatId, userState.time, userState.duration],
+                function(err) {
+                    if (err) {
+                        console.error('Database insert error:', err);
+                        bot.sendMessage(chatId, "❌ Ошибка при создании звонка");
+                        return;
+                    }
+
+                    const callId = this.lastID;
+                    const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+
+                    const message = `
 ✅ *Звонок создан!*
 
 📅 Время: ${userState.time}
-⏱ Длительность: ${duration} минут
+⏱ Длительность: ${userState.duration} минут
 🔗 Ссылка: ${joinLink}
 🎯 ID звонка: ${callId}
 
 *Перешлите ссылку вашему собеседнику!*
 Для отмены: /cancelcall ${callId}
-                                            `;
+                    `;
 
-                                            bot.sendMessage(chatId, message, { parse_mode: 'Markdown' })
-                                                .catch(error => console.error('Send message error:', error));
-                                        }
-                                    );
-                                }
-                            });
+                    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' })
+                        .then(() => {
+                            console.log(`Call created successfully for user ${chatId}, ID: ${callId}`);
                         })
-                        .catch(error => console.error('Send message error:', error));
+                        .catch(error => {
+                            console.error('Send message error:', error);
+                        });
                 }
-            });
-        })
-        .catch(error => console.error('Send message error:', error));
+            );
+        }
+    };
+
+    // Начинаем процесс - спрашиваем время
+    bot.sendMessage(chatId, "🕐 *На какое время планируем звонок?*\nВведите в формате: ГГГГ-ММ-ДД ЧЧ:ММ\nНапример: 2024-12-25 15:30", {
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true }
+    }).then(() => {
+        // Ждем первый ответ (время)
+        bot.once('message', responseHandler);
+    }).catch(error => {
+        console.error('Error asking time:', error);
+        bot.sendMessage(chatId, "❌ Произошла ошибка, попробуйте снова");
+    });
 });
 
 // ===== КОМАНДА /mycalls =====
