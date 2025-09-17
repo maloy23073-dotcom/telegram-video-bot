@@ -5,6 +5,7 @@ class VideoCall {
         this.peerConnection = null;
         this.isVideoOn = true;
         this.isAudioOn = true;
+        this.ws = null;
 
         this.initialize();
     }
@@ -23,6 +24,7 @@ class VideoCall {
             await this.setupMedia();
             this.setupEventListeners();
             await this.setupWebRTC();
+            await this.setupWebSocket();
 
         } catch (error) {
             console.error('Initialization error:', error);
@@ -53,6 +55,36 @@ class VideoCall {
         document.getElementById('endCall').addEventListener('click', () => this.endCall());
     }
 
+    async setupWebSocket() {
+        return new Promise((resolve, reject) => {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const signalingUrl = `${protocol}//${window.location.hostname}:${window.location.port || (window.location.protocol === 'https:' ? 443 : 80)}`;
+
+            this.ws = new WebSocket(`${signalingUrl}?call_code=${this.callCode}&user_id=${this.userId}`);
+
+            this.ws.onopen = () => {
+                console.log('WebSocket connected');
+                this.updateStatus('Подключение к звонку...');
+                resolve();
+            };
+
+            this.ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                this.handleSignalingMessage(message);
+            };
+
+            this.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                reject(error);
+            };
+
+            this.ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                this.updateStatus('Соединение разорвано');
+            };
+        });
+    }
+
     async setupWebRTC() {
         try {
             const configuration = {
@@ -80,8 +112,7 @@ class VideoCall {
             this.peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     this.sendSignal('ice-candidate', {
-                        candidate: event.candidate,
-                        userId: this.userId
+                        candidate: event.candidate
                     });
                 }
             };
@@ -91,12 +122,8 @@ class VideoCall {
             await this.peerConnection.setLocalDescription(offer);
 
             await this.sendSignal('offer', {
-                offer: offer,
-                userId: this.userId
+                offer: offer
             });
-
-            // Периодически проверяем answers от других участников
-            this.checkForAnswers();
 
         } catch (error) {
             console.error('WebRTC error:', error);
@@ -105,41 +132,40 @@ class VideoCall {
     }
 
     async sendSignal(type, data) {
-        try {
-            const response = await fetch('https://your-server.com/signal', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    callCode: this.callCode,
-                    type: type,
-                    data: data
-                })
-            });
-
-            return await response.json();
-        } catch (error) {
-            console.error('Signal error:', error);
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+                type: type,
+                data: data
+            }));
         }
     }
 
-    async checkForAnswers() {
+    async handleSignalingMessage(message) {
         try {
-            const response = await this.sendSignal('get-answers', {});
-
-            if (response.answers) {
-                for (const [answerUserId, answer] of response.answers) {
-                    if (answerUserId !== this.userId) {
-                        await this.peerConnection.setRemoteDescription(answer);
+            switch (message.type) {
+                case 'offer':
+                    if (message.from != this.userId) {
+                        await this.peerConnection.setRemoteDescription(message.data.offer);
+                        const answer = await this.peerConnection.createAnswer();
+                        await this.peerConnection.setLocalDescription(answer);
+                        await this.sendSignal('answer', { answer: answer });
                     }
-                }
+                    break;
+
+                case 'answer':
+                    if (message.from != this.userId) {
+                        await this.peerConnection.setRemoteDescription(message.data.answer);
+                    }
+                    break;
+
+                case 'ice-candidate':
+                    if (message.from != this.userId) {
+                        await this.peerConnection.addIceCandidate(message.data.candidate);
+                    }
+                    break;
             }
-
-            // Продолжаем проверять
-            setTimeout(() => this.checkForAnswers(), 2000);
-
         } catch (error) {
-            console.error('Check answers error:', error);
-            setTimeout(() => this.checkForAnswers(), 2000);
+            console.error('Signaling message error:', error);
         }
     }
 
@@ -174,13 +200,16 @@ class VideoCall {
             this.peerConnection.close();
         }
 
-        this.sendSignal('leave-call', { userId: this.userId });
+        if (this.ws) {
+            this.ws.close();
+        }
 
         // Закрываем Mini App
         if (window.Telegram && window.Telegram.WebApp) {
             window.Telegram.WebApp.close();
         } else {
             alert('Звонок завершен');
+            window.close();
         }
     }
 }

@@ -10,8 +10,20 @@ services:
         sync: false
       - key: WEB_APP_URL
         sync: false
+      - key: DATABASE_URL
+        fromService:
+          name: telegram-video-bot-db
+          type: postgres
+          property: connectionString
       - key: RENDER_EXTERNAL_URL
         fromService:
           name: telegram-video-bot
           type: web
           property: url
+      - key: RUN_SIGNALING_SERVER
+        value: "true"
+
+  - type: postgres
+    name: telegram-video-bot-db
+    plan: free
+    ipAllowList: [] # Allow all IPs

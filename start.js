@@ -12,13 +12,23 @@ console.log('=== ENVIRONMENT VARIABLES ===');
 console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? '✅ Set' : '❌ Not set');
 console.log('WEB_APP_URL:', process.env.WEB_APP_URL || 'Not set');
 console.log('PORT:', process.env.PORT || 3000);
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? '✅ Set' : '❌ Not set');
 
-// Просто запускаем bot.js, который теперь использует Express + Webhooks
+// Запускаем бота и сигнальный сервер
 try {
+    // Запускаем бота
     require('./bot.js');
     console.log('✅ Bot started successfully with Webhooks');
+
+    // Запускаем сигнальный сервер на другом порту, если нужно
+    if (process.env.RUN_SIGNALING_SERVER === 'true') {
+        const signalingPort = parseInt(process.env.PORT || 3000) + 1;
+        process.env.PORT = signalingPort;
+        require('./server.js');
+        console.log(`✅ Signaling server started on port ${signalingPort}`);
+    }
 } catch (error) {
-    console.error('❌ Failed to start bot:', error.message);
+    console.error('❌ Failed to start:', error.message);
     process.exit(1);
 }
 
