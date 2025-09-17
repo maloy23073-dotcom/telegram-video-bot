@@ -8,6 +8,11 @@ const path = require('path');
 const TOKEN = process.env.BOT_TOKEN;
 const SERVER_URL = process.env.SERVER_URL || 'https://telegram-video-bot-vvfl.onrender.com';
 
+// Генерация токена
+const generateJoinToken = () => {
+    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
+
 // Проверка переменных окружения
 console.log('=== BOT STARTING ===');
 console.log('BOT_TOKEN:', TOKEN ? '✅ Set' : '❌ Not set');
@@ -18,6 +23,14 @@ if (!TOKEN) {
     process.exit(1);
 }
 
+// Инициализация БД
+const dbPath = path.join(__dirname, 'database.sqlite');
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) console.error('❌ Database error:', err);
+    else console.log('✅ Database connected');
+});
+
+// Инициализация бота
 const bot = new TelegramBot(TOKEN, {
     polling: true,
     request: {
@@ -25,19 +38,9 @@ const bot = new TelegramBot(TOKEN, {
     }
 });
 
-// Инициализация базы данных
-const dbPath = path.join(__dirname, 'calls.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('❌ Database connection error:', err);
-    } else {
-        console.log('✅ Connected to SQLite database');
-        initializeDatabase();
-    }
-});
-
+// Функция инициализации базы данных
 function initializeDatabase() {
-    // Таблица пользователей (НОВАЯ ТАБЛИЦА)
+    // Таблица пользователей
     db.run(`CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -55,6 +58,7 @@ function initializeDatabase() {
         creator_id INTEGER NOT NULL,
         scheduled_time TEXT NOT NULL,
         duration_minutes INTEGER NOT NULL,
+        join_token TEXT NOT NULL,
         title TEXT DEFAULT '',
         status TEXT DEFAULT 'scheduled',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -91,6 +95,9 @@ function initializeDatabase() {
         else console.log('✅ Notifications table ready');
     });
 }
+
+// Вызов инициализации БД
+initializeDatabase();
 
 // Функция для сохранения/обновления информации о пользователе
 function saveUser(user) {
@@ -138,6 +145,34 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, text).catch(console.error);
 });
 
+// Обработчик публичных приглашений
+bot.onText(/\/start join_(\d+)_(.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const callId = match[1];
+    const token = match[2];
+
+    db.get(`SELECT * FROM calls WHERE id = ? AND join_token = ?`, [callId, token], (err, call) => {
+        if (err || !call) {
+            return bot.sendMessage(chatId, "❌ Приглашение недействительно или expired");
+        }
+
+        const joinLink = `${SERVER_URL}/call.html?call_id=${callId}&token=${token}`;
+
+        const message = `
+🎉 *Вас пригласили на видеозвонок!*
+
+📅 *Время:* ${call.scheduled_time}
+⏱ *Длительность:* ${call.duration_minutes} минут
+
+🔗 *Присоединиться:* ${joinLink}
+
+*Нажмите на ссылку выше чтобы присоединиться к звонку!*
+        `;
+
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    });
+});
+
 // ===== КОМАНДА /help =====
 bot.onText(/\/help/, (msg) => {
     const chatId = msg.chat.id;
@@ -165,26 +200,12 @@ bot.onText(/\/newcall/, async (msg) => {
     const chatId = msg.chat.id;
 
     try {
-        // Шаг 1: Запрос названия звонка
-        await bot.sendMessage(chatId, "📝 Введите название звонка:");
-
-        const titleMsg = await new Promise((resolve, reject) => {
-            const handler = (msg) => {
-                if (msg.chat.id === chatId && !msg.text.startsWith('/')) {
-                    bot.removeListener('message', handler);
-                    resolve(msg);
-                }
-            };
-            bot.on('message', handler);
-            setTimeout(() => reject(new Error('Timeout')), 60000);
-        });
-
-        // Шаг 2: Запрос времени
+        // Шаг 1: Запрос времени
         await bot.sendMessage(chatId, "🕐 На какое время? (Формат: ГГГГ-ММ-ДД ЧЧ:ММ)\nПример: 2024-12-25 15:30");
 
         const timeMsg = await new Promise((resolve, reject) => {
             const handler = (msg) => {
-                if (msg.chat.id === chatId && !msg.text.startsWith('/')) {
+                if (msg.chat.id === chatId) {
                     bot.removeListener('message', handler);
                     resolve(msg);
                 }
@@ -193,12 +214,12 @@ bot.onText(/\/newcall/, async (msg) => {
             setTimeout(() => reject(new Error('Timeout')), 60000);
         });
 
-        // Шаг 3: Запрос длительности
+        // Шаг 2: Запрос длительности
         await bot.sendMessage(chatId, "⏱ Продолжительность в минутах?\nПример: 30");
 
         const durationMsg = await new Promise((resolve, reject) => {
             const handler = (msg) => {
-                if (msg.chat.id === chatId && !msg.text.startsWith('/')) {
+                if (msg.chat.id === chatId) {
                     bot.removeListener('message', handler);
                     resolve(msg);
                 }
@@ -212,49 +233,76 @@ bot.onText(/\/newcall/, async (msg) => {
             return bot.sendMessage(chatId, "❌ Введите число больше 0");
         }
 
-        // Сохранение в БД
-        db.run(
-            `INSERT INTO calls (creator_id, scheduled_time, duration_minutes, title) VALUES (?, ?, ?, ?)`,
-            [chatId, timeMsg.text, duration, titleMsg.text],
-            function(err) {
-                if (err) {
-                    console.error('Database insert error:', err);
-                    return bot.sendMessage(chatId, "❌ Ошибка при создании звонка");
+        // Генерируем публичный токен для доступа
+        const joinToken = generateJoinToken();
+
+        // Сохранение в БД с публичным токеном
+        await new Promise((resolve, reject) => {
+            db.run(
+                `INSERT INTO calls (creator_id, scheduled_time, duration_minutes, join_token) VALUES (?, ?, ?, ?)`,
+                [chatId, timeMsg.text, duration, joinToken],
+                function(err) {
+                    if (err) return reject(err);
+                    resolve({ callId: this.lastID, joinToken });
                 }
+            );
+        }).then(async ({ callId, joinToken }) => {
+            const joinLink = `${SERVER_URL}/call.html?call_id=${callId}&token=${joinToken}`;
+            const publicInviteLink = `https://t.me/${bot.options.username}?start=join_${callId}_${joinToken}`;
 
-                const callId = this.lastID;
-                const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+            const message = `
+✅ *Звонок создан!*
 
-                const message = `
-✅ Звонок создан!
+📅 *Время:* ${timeMsg.text}
+⏱ *Длительность:* ${duration} минут
+🎯 *ID звонка:* ${callId}
 
-📋 Название: ${titleMsg.text}
-📅 Время: ${timeMsg.text}
-⏱ Длительность: ${duration} минут
-🔗 Ссылка: ${joinLink}
-🎯 ID: ${callId}
+🔗 *Публичная ссылка для присоединения:*
+${joinLink}
 
-Теперь пригласите участников командой:
-/invite ${callId} @username
-                `;
+📩 *Приглашение в Telegram:*
+${publicInviteLink}
 
-                // Создаем уведомление за 5 минут до звонка
-                const callTime = new Date(timeMsg.text);
-                const notificationTime = new Date(callTime.getTime() - 5 * 60000);
+*Любой пользователь может присоединиться по этим ссылкам!*
+            `;
 
-                db.run(
-                    `INSERT INTO notifications (call_id, user_id, type, scheduled_time) VALUES (?, ?, ?, ?)`,
-                    [callId, chatId, '5min_reminder', notificationTime.toISOString()]
-                );
-
-                bot.sendMessage(chatId, message).catch(console.error);
-            }
-        );
+            await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        });
 
     } catch (error) {
         console.error('Newcall error:', error);
         bot.sendMessage(chatId, "❌ Ошибка. Попробуйте /newcall снова");
     }
+});
+
+// ===== КОМАНДА /mycalls =====
+bot.onText(/\/mycalls/, (msg) => {
+    const chatId = msg.chat.id;
+
+    db.all(`SELECT * FROM calls WHERE creator_id = ? ORDER BY created_at DESC`, [chatId], (err, calls) => {
+        if (err) {
+            console.error('Mycalls error:', err);
+            return bot.sendMessage(chatId, "❌ Ошибка получения списка звонков");
+        }
+
+        if (calls.length === 0) {
+            return bot.sendMessage(chatId, "📭 У вас нет активных звонков");
+        }
+
+        let message = "📋 Ваши звонки:\n\n";
+
+        calls.forEach(call => {
+            const joinLink = `${SERVER_URL}/call.html?call_id=${call.id}&token=${call.join_token}`;
+            message += `🎯 ID: ${call.id}\n`;
+            message += `📅 Время: ${call.scheduled_time}\n`;
+            message += `⏱ Длительность: ${call.duration_minutes} мин\n`;
+            message += `🔗 Ссылка: ${joinLink}\n`;
+            message += `📊 Статус: ${call.status}\n`;
+            message += "────────────────────\n";
+        });
+
+        bot.sendMessage(chatId, message);
+    });
 });
 
 // ===== КОМАНДА /invite =====
@@ -353,12 +401,11 @@ bot.onText(/\/invite(?: (\d+)(?: (@\w+))?)?/, (msg, match) => {
 // Функция для отправки приглашения
 function sendInvitation(userId, call, inviterUsername) {
     return new Promise((resolve, reject) => {
-        const joinLink = `${SERVER_URL}/call.html?call_id=${call.id}`;
+        const joinLink = `${SERVER_URL}/call.html?call_id=${call.id}&token=${call.join_token}`;
 
         const inviteMessage = `
 🎉 Вас пригласили на видеозвонок!
 
-📋 Название: ${call.title}
 📅 Время: ${call.scheduled_time}
 ⏱ Длительность: ${call.duration_minutes} минут
 👤 Организатор: @${inviterUsername}
@@ -422,12 +469,12 @@ function handleAcceptInvitation(chatId, callId, messageId) {
                     return bot.sendMessage(chatId, "✅ Приглашение принято");
                 }
 
-                const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
+                const joinLink = `${SERVER_URL}/call.html?call_id=${callId}&token=${call.join_token}`;
                 const message = `
 ✅ Вы приняли приглашение на звонок!
 
-📋 ${call.title}
 📅 ${call.scheduled_time}
+⏱ ${call.duration_minutes} минут
 🔗 ${joinLink}
 
 Напоминание придет за 5 минут до начала.
@@ -446,7 +493,7 @@ function handleAcceptInvitation(chatId, callId, messageId) {
                 // Уведомляем организатора
                 db.get(`SELECT username FROM users WHERE user_id = ?`, [chatId], (err, user) => {
                     const username = user && user.username ? `@${user.username}` : 'пользователь';
-                    bot.sendMessage(call.creator_id, `✅ ${username} принял приглашение на звонок "${call.title}"`);
+                    bot.sendMessage(call.creator_id, `✅ ${username} принял приглашение на звонок`);
                 });
 
                 if (messageId) {
@@ -484,7 +531,7 @@ function handleDeclineInvitation(chatId, callId, messageId) {
                 if (!err && call) {
                     db.get(`SELECT username FROM users WHERE user_id = ?`, [chatId], (err, user) => {
                         const username = user && user.username ? `@${user.username}` : 'пользователь';
-                        bot.sendMessage(call.creator_id, `❌ ${username} отклонил приглашение на звонок "${call.title}"`);
+                        bot.sendMessage(call.creator_id, `❌ ${username} отклонил приглашение на звонок`);
                     });
                 }
             });
@@ -520,37 +567,60 @@ bot.onText(/\/decline(?: (\d+))?/, (msg, match) => {
     handleDeclineInvitation(chatId, callId, null);
 });
 
-// Функция для отправки уведомлений
-function sendNotification(userId, callId, type) {
-    db.get(`SELECT * FROM calls WHERE id = ?`, [callId], (err, call) => {
-        if (err || !call) return;
+// ===== КОМАНДА /cancelcall =====
+bot.onText(/\/cancelcall(?: (\d+))?/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const callId = match[1];
 
-        const joinLink = `${SERVER_URL}/call.html?call_id=${callId}`;
-        let message = '';
+    if (!callId) {
+        return bot.sendMessage(chatId, "❌ Укажите ID звонка\nПример: /cancelcall 5");
+    }
 
-        if (type === '5min_reminder') {
-            message = `
-⏰ Напоминание: через 5 минут начинается звонок!
-
-📋 ${call.title}
-📅 ${call.scheduled_time}
-⏱ Длительность: ${call.duration_minutes} минут
-🔗 ${joinLink}
-
-Приготовьтесь к подключению!
-            `;
+    db.get(`SELECT * FROM calls WHERE id = ? AND creator_id = ?`, [callId, chatId], (err, call) => {
+        if (err) {
+            console.error('Cancelcall error:', err);
+            return bot.sendMessage(chatId, "❌ Ошибка базы данных");
         }
 
-        bot.sendMessage(userId, message)
-            .then(() => {
-                db.run(`UPDATE notifications SET sent = TRUE WHERE call_id = ? AND user_id = ? AND type = ?`,
-                    [callId, userId, type]);
-            })
-            .catch(error => {
-                console.error('Notification send error:', error);
+        if (!call) {
+            return bot.sendMessage(chatId, "❌ Звонок не найден или у вас нет прав для отмены");
+        }
+
+        db.run(`UPDATE calls SET status = 'cancelled' WHERE id = ?`, [callId], function(err) {
+            if (err) {
+                console.error('Cancel error:', err);
+                return bot.sendMessage(chatId, "❌ Ошибка отмены звонка");
+            }
+
+            // Уведомляем приглашенных пользователей
+            db.all(`SELECT user_id FROM invitations WHERE call_id = ? AND status = 'accepted'`, [callId], (err, users) => {
+                users.forEach(user => {
+                    bot.sendMessage(user.user_id, `❌ Звонок ID ${callId} был отменен организатором`).catch(console.error);
+                });
             });
+
+            bot.sendMessage(chatId, `✅ Звонок ID ${callId} отменен`);
+        });
     });
-}
+});
+
+// Функция для отправки уведомлений
+setInterval(() => {
+    const now = new Date().toISOString().slice(0, 16);
+    db.all(`SELECT * FROM calls WHERE scheduled_time LIKE ? AND status = 'scheduled'`, [`${now}%`], (err, rows) => {
+        if (err) return console.error('Notification error:', err);
+
+        rows.forEach(call => {
+            const joinLink = `${SERVER_URL}/call.html?call_id=${call.id}&token=${call.join_token}`;
+            const message = `🎉 *Время звонка!*\n\nПрисоединяйтесь: ${joinLink}`;
+
+            // Отправляем создателю
+            bot.sendMessage(call.creator_id, message, { parse_mode: 'Markdown' }).catch(console.error);
+
+            db.run(`UPDATE calls SET status = 'active' WHERE id = ?`, [call.id]);
+        });
+    });
+}, 60000);
 
 // Проверка уведомлений каждую минуту
 setInterval(() => {
@@ -564,5 +634,27 @@ setInterval(() => {
         });
     });
 }, 60000);
+
+// Функция отправки уведомления
+function sendNotification(userId, callId, type) {
+    db.get(`SELECT * FROM calls WHERE id = ?`, [callId], (err, call) => {
+        if (err || !call) return;
+
+        let message = '';
+        if (type === '5min_reminder') {
+            const joinLink = `${SERVER_URL}/call.html?call_id=${callId}&token=${call.join_token}`;
+            message = `⏰ *Напоминание:* Через 5 минут начинается звонок!\n\n🔗 Присоединиться: ${joinLink}`;
+        }
+
+        if (message) {
+            bot.sendMessage(userId, message, { parse_mode: 'Markdown' })
+                .then(() => {
+                    db.run(`UPDATE notifications SET sent = TRUE WHERE user_id = ? AND call_id = ? AND type = ?`,
+                        [userId, callId, type]);
+                })
+                .catch(console.error);
+        }
+    });
+}
 
 console.log('✅ Bot started successfully');
