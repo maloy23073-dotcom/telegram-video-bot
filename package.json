@@ -5,10 +5,7 @@
   "main": "bot.js",
   "scripts": {
     "start": "node start.js",
-    "dev": "nodemon start.js",
-    "bot": "node bot.js",
-    "server": "node server.js",
-    "build": "npm install"
+    "dev": "nodemon start.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",

@@ -1,6 +1,5 @@
-console.log('🚀 Starting server and bot...');
+console.log('🚀 Starting Telegram Video Bot...');
 
-// Загрузка переменных окружения
 require('dotenv').config();
 
 // Проверка обязательных переменных
@@ -9,38 +8,19 @@ if (!process.env.BOT_TOKEN) {
     process.exit(1);
 }
 
-if (!process.env.WEB_APP_URL) {
-    console.warn('⚠️  WEB_APP_URL not set, using default');
-    process.env.WEB_APP_URL = 'https://your-mini-app.com';
-}
-
 console.log('=== ENVIRONMENT VARIABLES ===');
 console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? '✅ Set' : '❌ Not set');
-console.log('WEB_APP_URL:', process.env.WEB_APP_URL);
+console.log('WEB_APP_URL:', process.env.WEB_APP_URL || 'Not set');
 console.log('PORT:', process.env.PORT || 3000);
 
-// Start server
-console.log('🔄 Starting server...');
+// Просто запускаем bot.js, который теперь использует Express + Webhooks
 try {
-    require('./server.js');
-    console.log('✅ Server started successfully');
+    require('./bot.js');
+    console.log('✅ Bot started successfully with Webhooks');
 } catch (error) {
-    console.error('❌ Server failed to start:', error.message);
+    console.error('❌ Failed to start bot:', error.message);
     process.exit(1);
 }
-
-// Start bot with delay to ensure server is ready
-console.log('⏳ Starting bot in 3 seconds...');
-setTimeout(() => {
-    try {
-        require('./bot.js');
-        console.log('✅ Bot started successfully');
-        console.log('🎉 All systems operational!');
-    } catch (error) {
-        console.error('❌ Bot failed to start:', error.message);
-        process.exit(1);
-    }
-}, 3000);
 
 // Обработка graceful shutdown
 process.on('SIGINT', () => {

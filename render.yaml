@@ -10,5 +10,8 @@ services:
         sync: false
       - key: WEB_APP_URL
         sync: false
-      - key: PORT
-        value: 10000
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          name: telegram-video-bot
+          type: web
+          property: url
